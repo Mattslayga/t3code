@@ -4,6 +4,14 @@ T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provid
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
 
+## Fork intent — Mattslayga/t3code
+
+This is a personal fork of `pingdotgg/t3code` for building a **Devin CLI agent provider** — a new provider adapter in `apps/server` plus its contract in `packages/contracts`, so Devin agents can be orchestrated alongside the existing providers.
+
+- This fork is not currently for upstream PRs; the maintainers are not accepting most contributions.
+- `main` stays merge-compatible with `upstream/main` (`git fetch upstream && git merge upstream/main`). Custom work goes on feature branches; only durable fork-level changes like this block land on `main`.
+- Everything below this section is upstream's own contributor guidance and still applies.
+
 ## What makes T3 Code special?
 
 We have over 200,000 users who love T3 Code. It's important we maintain the things they love as we continue to iterate on the product. Here's a brief list of the things we can never compromise on.
