@@ -261,6 +261,17 @@ export const CursorIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+export const DevinIcon: Icon = ({ className, ...props }) => (
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="none"
+    className={cn("fill-[#0F0F0F] dark:fill-[#F5F5F5]", className)}
+  >
+    <path d="M6 4h5.5c4.7 0 8.5 3.6 8.5 8s-3.8 8-8.5 8H6V4Zm2.6 2.4v11.2h2.9c3.4 0 6.1-2.5 6.1-5.6s-2.7-5.6-6.1-5.6H8.6Z" />
+  </svg>
+);
+
 export const GrokIcon: Icon = ({ className, ...props }) => (
   <svg
     {...props}
