@@ -1,4 +1,22 @@
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
+import type { ProviderInstanceId } from "@t3tools/contracts";
+
+export function modelFavoriteKey(provider: ProviderInstanceId, model: string): string {
+  return `${provider}:${model}`;
+}
+
+/** Keep catalog order within each group when favorites move to the front. */
+export function favoritesFirst(
+  models: ReadonlyArray<ModelOption>,
+  favoriteKeys: ReadonlySet<string>,
+): ReadonlyArray<ModelOption> {
+  const favorites: ModelOption[] = [];
+  const others: ModelOption[] = [];
+  for (const model of models) {
+    (favoriteKeys.has(model.key) ? favorites : others).push(model);
+  }
+  return [...favorites, ...others];
+}
 
 /** Match the terms a user can actually see or recognize in the model picker. */
 export function modelMatchesCatalogQuery(input: {
@@ -37,7 +55,9 @@ export function canCommitPendingModel(
   groups: ReadonlyArray<ProviderGroup>,
 ): boolean {
   return groups.some((group) =>
-    group.models.some((model) => model.key === pending.key && !model.isUnavailable),
+    group.models.some(
+      (model) => model.key === pending.key && !model.isUnavailable && !model.isHidden,
+    ),
   );
 }
 

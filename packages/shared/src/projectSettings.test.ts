@@ -2,6 +2,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -9,7 +10,10 @@ import { createModelSelection } from "./model.ts";
 import {
   clearProjectSettingsOverrides,
   hasProjectSettingsOverrides,
+  resolveNewThreadEnvMode,
+  resolveProjectFileBackedSetting,
   resolveProjectSettings,
+  resolveWorktreeCleanup,
   withProjectSettingsOverrides,
 } from "./projectSettings.ts";
 import { applyServerSettingsPatch } from "./serverSettings.ts";
@@ -27,6 +31,24 @@ describe("resolveProjectSettings", () => {
     expect(resolveProjectSettings(DEFAULT_SERVER_SETTINGS, null).settings).toBe(
       DEFAULT_SERVER_SETTINGS,
     );
+  });
+
+  it("ignores an override left undefined by a forward-compatible decode", () => {
+    const resolved = resolveProjectSettings(
+      {
+        ...DEFAULT_SERVER_SETTINGS,
+        defaultRuntimeMode: "full-access",
+        projectSettingsOverrides: { [projectId]: { defaultRuntimeMode: undefined } as never },
+      },
+      projectId,
+    );
+    expect(resolved.settings.defaultRuntimeMode).toBe("full-access");
+    expect(resolved.sources.defaultRuntimeMode).toBe("environment");
+    expect(
+      hasProjectSettingsOverrides({
+        projectSettingsOverrides: { [projectId]: { defaultRuntimeMode: undefined } as never },
+      }),
+    ).toBe(false);
   });
 
   it("treats a null project like an absent one before the shell snapshot arrives", () => {
@@ -58,7 +80,12 @@ describe("resolveProjectSettings", () => {
   it("keeps the environment text generation model when the override's provider is disabled", () => {
     const disabledSelection = createModelSelection(ProviderInstanceId.make("claudeAgent"), "opus");
     const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
-      providers: { claudeAgent: { enabled: false } },
+      providerInstances: {
+        [ProviderInstanceId.make("claudeAgent")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          enabled: false,
+        },
+      },
       projectSettingsOverrides: {
         [projectId]: { textGenerationModelSelection: disabledSelection },
       },
@@ -108,12 +135,189 @@ describe("resolveProjectSettings", () => {
   it("keeps the environment default model when the override's provider is disabled", () => {
     const disabledSelection = createModelSelection(ProviderInstanceId.make("claudeAgent"), "opus");
     const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
-      providers: { claudeAgent: { enabled: false } },
+      providerInstances: {
+        [ProviderInstanceId.make("claudeAgent")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          enabled: false,
+        },
+      },
       projectSettingsOverrides: { [projectId]: { defaultModelSelection: disabledSelection } },
     });
     const resolved = resolveProjectSettings(settings, projectId);
     expect(resolved.settings.defaultModelSelection).toBeNull();
     expect(resolved.sources.defaultModelSelection).toBe("environment");
+  });
+
+  it("moves text generation off an instance the project turned off", () => {
+    const codex = ProviderInstanceId.make("codex");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: createModelSelection(codex, "gpt-5"),
+      projectSettingsOverrides: {
+        [projectId]: { providerInstances: { [codex]: { enabled: false } } },
+      },
+    };
+    expect(
+      resolveProjectSettings(settings, projectId).settings.textGenerationModelSelection.instanceId,
+    ).toBe(ProviderInstanceId.make("claudeAgent"));
+    expect(
+      resolveProjectSettings(settings, otherProjectId).settings.textGenerationModelSelection,
+    ).toEqual(settings.textGenerationModelSelection);
+  });
+
+  it("falls back to a configured instance when every built-in one is off for the project", () => {
+    const codex = ProviderInstanceId.make("codex");
+    const codexWork = ProviderInstanceId.make("codex_work");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelection: createModelSelection(codex, "gpt-5"),
+      providerInstances: { [codexWork]: { driver: ProviderDriverKind.make("codex"), config: {} } },
+      projectSettingsOverrides: {
+        [projectId]: {
+          providerInstances: {
+            [codex]: { enabled: false },
+            [ProviderInstanceId.make("claudeAgent")]: { enabled: false },
+          },
+        },
+      },
+    };
+    expect(
+      resolveProjectSettings(settings, projectId).settings.textGenerationModelSelection.instanceId,
+    ).toBe(codexWork);
+  });
+});
+
+describe("resolveProjectSettings with a t3.json", () => {
+  it("walks project override, environment value, file, then built-in for file-backed keys", () => {
+    const file = { defaultThreadEnvMode: "worktree" as const };
+    const fromOverride = resolveProjectSettings(
+      {
+        ...DEFAULT_SERVER_SETTINGS,
+        projectSettingsOverrides: { [projectId]: { defaultThreadEnvMode: "local" } },
+      },
+      projectId,
+      null,
+      file,
+    );
+    expect(fromOverride.settings.defaultThreadEnvMode).toBe("local");
+    expect(fromOverride.sources.defaultThreadEnvMode).toBe("project");
+
+    const fromEnvironment = resolveProjectSettings(
+      { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "local" },
+      projectId,
+      null,
+      file,
+    );
+    expect(fromEnvironment.settings.defaultThreadEnvMode).toBe("local");
+    expect(fromEnvironment.sources.defaultThreadEnvMode).toBe("environment");
+
+    const fromFile = resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId, null, file);
+    expect(fromFile.settings.defaultThreadEnvMode).toBe("worktree");
+    expect(fromFile.sources.defaultThreadEnvMode).toBe("t3.json");
+
+    const builtIn = resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId, null, null);
+    expect(builtIn.settings.defaultThreadEnvMode).toBe("local");
+    expect(builtIn.sources.defaultThreadEnvMode).toBe("environment");
+    // A stored null override defers like an unset one and is not reported
+    // as the project's value.
+    const nullOverride = resolveProjectSettings(
+      {
+        ...DEFAULT_SERVER_SETTINGS,
+        projectSettingsOverrides: { [projectId]: { defaultThreadEnvMode: null } as never },
+      },
+      projectId,
+      null,
+      file,
+    );
+    expect(nullOverride.settings.defaultThreadEnvMode).toBe("worktree");
+    expect(nullOverride.sources.defaultThreadEnvMode).toBe("t3.json");
+    // A file that does not mention the key leaves the source alone too.
+    expect(
+      resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId, null, {}).sources
+        .defaultThreadEnvMode,
+    ).toBe("environment");
+  });
+
+  it("resolves one key from the settings tier, then the file, then the built-in", () => {
+    expect(
+      resolveProjectFileBackedSetting("worktreeSubmodules", "none", {
+        worktreeSubmodules: "top-level",
+      }),
+    ).toEqual({ value: "none", source: "environment" });
+    expect(
+      resolveProjectFileBackedSetting("worktreeSubmodules", null, {
+        worktreeSubmodules: "top-level",
+      }),
+    ).toEqual({ value: "top-level", source: "t3.json" });
+    expect(resolveProjectFileBackedSetting("worktreeSubmodules", null, null)).toEqual({
+      value: "recursive",
+      source: "environment",
+    });
+  });
+
+  it("leaves settings untouched when no file is passed", () => {
+    expect(resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId).settings).toBe(
+      DEFAULT_SERVER_SETTINGS,
+    );
+  });
+});
+
+describe("resolveNewThreadEnvMode", () => {
+  const worktreeEnvironment = resolveProjectSettings(
+    { ...DEFAULT_SERVER_SETTINGS, defaultThreadEnvMode: "worktree" },
+    projectId,
+    null,
+    null,
+  );
+  const newProject = {
+    projectSettings: worktreeEnvironment,
+    workspaceRoot: "/data/projects/pinball-stats",
+    newProjectsRoot: "/data/projects/",
+    projectHasThreads: false,
+  };
+
+  it("starts a new project's first thread in its checkout", () => {
+    expect(resolveNewThreadEnvMode(newProject)).toBe("local");
+    expect(
+      resolveNewThreadEnvMode({
+        ...newProject,
+        workspaceRoot: "C:\\Data\\Projects\\Pinball-Stats",
+        newProjectsRoot: "c:/data/projects",
+      }),
+    ).toBe("local");
+  });
+
+  it("keeps the configured default once the project has a thread or is not a new project", () => {
+    expect(resolveNewThreadEnvMode({ ...newProject, projectHasThreads: true })).toBe("worktree");
+    expect(resolveNewThreadEnvMode({ ...newProject, workspaceRoot: "/data/projects" })).toBe(
+      "worktree",
+    );
+    expect(
+      resolveNewThreadEnvMode({ ...newProject, workspaceRoot: "/data/projects/a/nested" }),
+    ).toBe("worktree");
+    expect(resolveNewThreadEnvMode({ ...newProject, workspaceRoot: "/data/projects-old/a" })).toBe(
+      "worktree",
+    );
+    expect(resolveNewThreadEnvMode({ ...newProject, newProjectsRoot: undefined })).toBe("worktree");
+  });
+
+  it("lets a project override, or a t3.json the environment defers to, keep worktree mode", () => {
+    for (const projectSettings of [
+      resolveProjectSettings(
+        {
+          ...DEFAULT_SERVER_SETTINGS,
+          projectSettingsOverrides: { [projectId]: { defaultThreadEnvMode: "worktree" } },
+        },
+        projectId,
+        null,
+        null,
+      ),
+      resolveProjectSettings(DEFAULT_SERVER_SETTINGS, projectId, null, {
+        defaultThreadEnvMode: "worktree",
+      }),
+    ]) {
+      expect(resolveNewThreadEnvMode({ ...newProject, projectSettings })).toBe("worktree");
+    }
   });
 });
 
@@ -213,4 +417,87 @@ describe("projectSettingsOverrides patches", () => {
       [otherProjectId]: { defaultThreadEnvMode: "worktree" },
     });
   });
+});
+
+describe("resolveWorktreeCleanup", () => {
+  it("inherits machine rules, disables one project and keeps custom rules isolated", () => {
+    const machine = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      storageCleanup: { worktreeAfterDays: 8, worktreeOnDelete: true, logsAfterDays: 3 },
+    });
+    const inherited = resolveWorktreeCleanup(machine, projectId);
+    const off = applyServerSettingsPatch(machine, {
+      projectSettingsOverrides: {
+        [projectId]: { worktreeCleanup: { mode: "off" } },
+      },
+    });
+    expect(resolveWorktreeCleanup(off, projectId)).toEqual({
+      worktreeAfterDays: null,
+      worktreeOnDelete: false,
+      worktreeOnMerge: false,
+      worktreeUnchanged: false,
+      worktreeKeepWhen: "uncommitted-changes",
+    });
+    expect(resolveWorktreeCleanup(off, otherProjectId)).toEqual(inherited);
+    const custom = applyServerSettingsPatch(off, {
+      projectSettingsOverrides: {
+        [projectId]: {
+          worktreeCleanup: { mode: "custom", rules: { ...inherited, worktreeAfterDays: 15 } },
+        },
+      },
+    });
+    expect(resolveWorktreeCleanup(custom, projectId).worktreeAfterDays).toBe(15);
+    expect(custom.storageCleanup.logsAfterDays).toBe(3);
+    const reset = applyServerSettingsPatch(custom, {
+      projectSettingsOverrides: {
+        [projectId]: clearProjectSettingsOverrides(custom, projectId, ["worktreeCleanup"]),
+      },
+    });
+    expect(resolveWorktreeCleanup(reset, projectId)).toEqual(inherited);
+  });
+  it("completes partial machine custom rules and preserves them across edits", () => {
+    const initial = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      storageCleanup: { worktreeAfterDays: 8, worktreeOnDelete: true },
+    });
+    const custom = applyServerSettingsPatch(initial, {
+      worktreeCleanup: { mode: "custom", rules: { worktreeOnMerge: true } },
+    });
+    const edited = applyServerSettingsPatch(custom, {
+      worktreeCleanup: { mode: "custom", rules: { worktreeAfterDays: 15 } },
+    });
+    expect(resolveWorktreeCleanup(edited, null)).toEqual({
+      worktreeAfterDays: 15,
+      worktreeOnDelete: true,
+      worktreeOnMerge: true,
+      worktreeUnchanged: false,
+      worktreeKeepWhen: "uncommitted-changes",
+    });
+    expect(
+      resolveWorktreeCleanup(applyServerSettingsPatch(edited, { worktreeCleanup: null }), null)
+        .worktreeAfterDays,
+    ).toBe(8);
+  });
+});
+
+it("inherits branch naming defaults and applies project overrides independently", () => {
+  const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+    branchNamingMode: "static",
+    branchNamePrefix: "team/",
+    branchNameInstructions: "Use issue IDs.",
+    projectSettingsOverrides: { [projectId]: { branchNamingMode: "custom" } },
+  });
+  expect(resolveProjectSettings(settings, projectId).settings).toMatchObject({
+    branchNamingMode: "custom",
+    branchNamePrefix: "team/",
+    branchNameInstructions: "Use issue IDs.",
+  });
+  expect(resolveProjectSettings(settings, otherProjectId).settings).toMatchObject({
+    branchNamingMode: "static",
+    branchNamePrefix: "team/",
+  });
+  const cleared = applyServerSettingsPatch(settings, {
+    projectSettingsOverrides: {
+      [projectId]: clearProjectSettingsOverrides(settings, projectId, ["branchNamingMode"]),
+    },
+  });
+  expect(resolveProjectSettings(cleared, projectId).settings.branchNamingMode).toBe("static");
 });

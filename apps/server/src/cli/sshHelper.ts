@@ -8,7 +8,7 @@ import * as NodeHttp from "node:http";
 import * as NodeNet from "node:net";
 
 import * as Effect from "effect/Effect";
-import { Argument, Command } from "effect/unstable/cli";
+import { Argument, Command } from "effect/cli";
 
 /**
  * Small helpers the SSH launch script needs on the remote host. The script
@@ -18,21 +18,38 @@ import { Argument, Command } from "effect/unstable/cli";
  * them.
  */
 
-const tryPort = (port: number) =>
-  new Promise<number | false>((resolve) => {
+const canBind = (port: number) =>
+  new Promise<boolean>((resolve) => {
     const server = NodeNet.createServer();
     server.unref();
     server.once("error", () => resolve(false));
     server.listen(port, "127.0.0.1", () => {
-      server.close((error) => resolve(error ? false : port));
+      server.close((error) => resolve(!error));
     });
+  });
+
+// macOS lets the bind above succeed while another process listens on
+// *:<port>, so also skip any port that already answers on loopback.
+const answersOnLoopback = (port: number) =>
+  new Promise<boolean>((resolve) => {
+    const socket = NodeNet.connect({ port, host: "127.0.0.1" });
+    socket.setTimeout(1000);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => resolve(false));
   });
 
 /** Prints the first free loopback port from the preferred one, scanning `window` ports. */
 const pickPort = Command.make("pick-port", {
-  portFile: Argument.string("port-file"),
-  defaultPort: Argument.integer("default-port"),
-  scanWindow: Argument.integer("scan-window"),
+  portFile: Argument.String("port-file"),
+  defaultPort: Argument.Int("default-port"),
+  scanWindow: Argument.Int("scan-window"),
 }).pipe(
   Command.withHandler(({ portFile, defaultPort, scanWindow }) =>
     Effect.promise(async () => {
@@ -40,7 +57,7 @@ const pickPort = Command.make("pick-port", {
       const preferred = Number.parseInt(raw, 10);
       const start = Number.isInteger(preferred) ? preferred : defaultPort;
       for (let port = start; port < start + scanWindow; port += 1) {
-        if (await tryPort(port)) {
+        if ((await canBind(port)) && !(await answersOnLoopback(port))) {
           process.stdout.write(String(port));
           return;
         }
@@ -71,9 +88,9 @@ const probe = (port: number, probeTimeoutMs: number) =>
 
 /** Exits 0 once the loopback server answers, 1 when the deadline passes first. */
 const waitReady = Command.make("wait-ready", {
-  port: Argument.integer("port"),
-  timeoutMs: Argument.integer("timeout-ms"),
-  probeTimeoutMs: Argument.integer("probe-timeout-ms"),
+  port: Argument.Int("port"),
+  timeoutMs: Argument.Int("timeout-ms"),
+  probeTimeoutMs: Argument.Int("probe-timeout-ms"),
 }).pipe(
   Command.withHandler(({ port, timeoutMs, probeTimeoutMs }) =>
     Effect.promise(async () => {
@@ -89,7 +106,7 @@ const waitReady = Command.make("wait-ready", {
 
 /** Prints `<pid> <port>` for a live default-home server, or exits 1. */
 const runtimePort = Command.make("runtime-port", {
-  runtimeFile: Argument.string("runtime-file"),
+  runtimeFile: Argument.String("runtime-file"),
 }).pipe(
   Command.withHandler(({ runtimeFile }) =>
     Effect.sync(() => {

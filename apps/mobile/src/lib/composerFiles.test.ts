@@ -185,10 +185,10 @@ describe("composer file attachments", () => {
     );
 
     it.each([
-      { size: { width: 4032, height: 3024 }, resizes: [{ width: 2048 }] },
-      { size: { width: 3024, height: 4032 }, resizes: [{ height: 2048 }] },
-      { size: { width: 2048, height: 1536 }, resizes: [] },
-    ])("bounds a $size.width x $size.height photo to a 2048 px longest edge", async (input) => {
+      { size: { width: 4032, height: 3024 }, resizes: [{ width: 2000, height: 1500 }] },
+      { size: { width: 3024, height: 4032 }, resizes: [{ width: 1500, height: 2000 }] },
+      { size: { width: 2000, height: 1500 }, resizes: [] },
+    ])("bounds a $size.width x $size.height photo to a 2000 px longest edge", async (input) => {
       native.size = input.size;
       mocks.pickMedia.mockResolvedValue({ canceled: false, assets: [photo] });
 
@@ -477,10 +477,13 @@ describe("composer file attachments", () => {
     it("applies the remaining attachment slots to photos and videos together", async () => {
       mocks.pickMedia.mockResolvedValue({ canceled: false, assets: [image, video] });
 
-      const result = await pickComposerMedia({ existingCount: 7, maxVideoBytes: 50 * 1024 * 1024 });
+      const result = await pickComposerMedia({
+        existingCount: 99,
+        maxVideoBytes: 50 * 1024 * 1024,
+      });
 
       expect(result.attachments).toEqual([expect.objectContaining({ type: "image" })]);
-      expect(result.error).toBe("You can attach up to 8 attachments per message.");
+      expect(result.error).toBe("You can attach up to 100 attachments per message.");
       expect(mocks.pickMedia).toHaveBeenCalledWith(expect.objectContaining({ selectionLimit: 1 }));
       expect(mocks.copy).not.toHaveBeenCalled();
     });
@@ -625,9 +628,9 @@ describe("composer file attachments", () => {
   });
 
   it("does not open the picker when the draft has no remaining attachment slots", async () => {
-    await expect(pickComposerFiles({ existingCount: 8 })).resolves.toEqual({
+    await expect(pickComposerFiles({ existingCount: 100 })).resolves.toEqual({
       files: [],
-      error: "You can attach up to 8 files per message.",
+      error: "You can attach up to 100 files per message.",
     });
 
     expect(mocks.pickFile).not.toHaveBeenCalled();
@@ -838,7 +841,7 @@ describe("composer file attachments", () => {
       ],
     });
 
-    const result = await pickComposerFiles({ existingCount: 7, maxBytes: 1024 * 1024 });
+    const result = await pickComposerFiles({ existingCount: 99, maxBytes: 1024 * 1024 });
 
     expect(result.files.map((file) => file.name)).toEqual(["report.pdf"]);
   });
